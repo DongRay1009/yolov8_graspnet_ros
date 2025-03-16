@@ -1,0 +1,5 @@
+Displays:
+  - PointCloud2 (Topic: /object_pointcloud)
+  - MarkerArray (Topic: /grasp_markers)
+  - PoseArray (Topic: /object_poses)
+  - Image (Topic: /detection_image)

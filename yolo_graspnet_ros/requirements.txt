@@ -1,0 +1,21 @@
+# ROS相关依赖 (假设已安装ROS noetic)
+# 深度学习和计算机视觉
+numpy>=1.19.0
+opencv-python>=4.5.0
+torch>=1.9.0
+torchvision>=0.10.0
+ultralytics>=8.0.0  # YOLOv8
+open3d>=0.15.0      # 点云处理
+scipy>=1.7.0
+scikit-learn>=1.0.0
+matplotlib>=3.3.0
+pillow>=8.0.0
+
+# 可选依赖
+tensorboard>=2.5.0  # 用于可视化训练过程
+pyyaml>=5.4.0       # 配置文件解析
+tqdm>=4.60.0        # 进度条显示
+
+# 如果使用CUDA (取决于您的PyTorch版本和GPU)
+# 示例: PyTorch 1.9.0 + CUDA 11.1
+# 请根据您的实际CUDA版本调整

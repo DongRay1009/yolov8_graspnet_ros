@@ -1,0 +1,25 @@
+<launch>
+  <!-- Launch YOLOv8 3D detection node -->
+  <node name="yolov8_3d_detector" pkg="yolo_graspnet_ros" type="detector_3d_node.py" output="screen">
+    <!-- Modify the topics if necessary -->
+    <param name="rgb_topic" value="/rgb/image_raw"/>
+    <param name="depth_topic" value="/depth_to_rgb/image_raw"/>
+    <param name="camera_info" value="/rgb/camera_info"/>
+    <!-- Modify the model path if necessary -->
+    <param name="model_path" value="$(find yolo_graspnet_ros)/models/yolov8m.pt"/>
+  </node>
+  
+  <!-- Launch GraspNet grasp generation node -->
+  <node name="graspnet_generator_with_dl" pkg="yolo_graspnet_ros" type="graspnet_generator_with_dl.py" output="screen">
+    <!-- Modify the topics if necessary -->
+    <param name="rgb_topic" value="/rgb/image_raw"/>
+    <param name="depth_topic" value="/depth_to_rgb/image_raw"/>
+    <param name="camera_info" value="/rgb/camera_info"/>
+    <param name="detection_topic" value="/object_poses"/>
+    <!-- Modify the model directory if necessary -->
+    <param name="model_dir" value="$(find yolo_graspnet_ros)/models/graspnet"/> 
+  </node>
+  
+  <!-- Launch RViz for visualization -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find yolo_graspnet_ros)/rviz/grasp_detection.rviz" required="false"/>
+</launch>

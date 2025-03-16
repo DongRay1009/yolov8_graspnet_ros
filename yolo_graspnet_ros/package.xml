@@ -1,0 +1,28 @@
+<package format="2">
+  <name>yolo_graspnet_ros</name>
+  <version>0.1.0</version>
+  <description>YOLOv8 based 3D object detection for ROS</description>
+  <maintainer email="2366932624@qq.com">Ray Dong</maintainer>
+  <license>MIT</license>
+  
+  <buildtool_depend>catkin</buildtool_depend>
+  
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
+  <depend>message_filters</depend>
+  <depend>tf2_ros</depend>
+  <build_depend>message_generation</build_depend>
+  
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>message_runtime</exec_depend>
+  
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>
