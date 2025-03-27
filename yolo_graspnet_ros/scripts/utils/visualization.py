@@ -3,18 +3,17 @@
 
 import rospy
 import numpy as np
-import cv2
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
 from geometry_msgs.msg import Point
 
 def draw_bounding_boxes(image, boxes, scores, classes, class_names):
     for box, score, cls in zip(boxes, scores, classes):
-        # MODIFY: You may need to adjust the confidence threshold based on your application
+        # ⚠️ 需要调整: 根据应用场景可能需要调整置信度阈值
         if score < 0.5:  # Threshold for displaying boxes
             continue
         x1, y1, x2, y2 = box
-        # MODIFY: You can customize the colors for different object classes
+        # ⚠️ 可选调整: 可以自定义不同类别的边界框颜色
         color = (0, 255, 0)  # Green color for bounding box
         cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
         label = f"{class_names[cls]}: {score:.2f}"
@@ -28,9 +27,8 @@ def visualize_detections(image, detections, class_names):
     return draw_bounding_boxes(image, boxes, scores, classes, class_names)
 
 def create_grasp_marker(position, rotation, width, score, id=0):
-    """Create grasp visualization marker"""
+    """创建抓取可视化标记"""
     marker = Marker()
-    # MODIFY: Change frame_id to match your camera frame
     marker.header.frame_id = "camera_color_optical_frame"
     marker.header.stamp = rospy.Time.now()
     marker.ns = "grasp_markers"
@@ -38,12 +36,12 @@ def create_grasp_marker(position, rotation, width, score, id=0):
     marker.type = Marker.ARROW
     marker.action = Marker.ADD
     
-    # Set position
+    # 设置位置
     marker.pose.position.x = float(position[0])
     marker.pose.position.y = float(position[1])
     marker.pose.position.z = float(position[2])
     
-    # Calculate quaternion from rotation matrix
+    # 从旋转矩阵计算四元数
     try:
         import tf.transformations
         matrix = np.eye(4)
@@ -54,29 +52,27 @@ def create_grasp_marker(position, rotation, width, score, id=0):
         marker.pose.orientation.z = q[2]
         marker.pose.orientation.w = q[3]
     except:
-        # Use default orientation if conversion fails
+        # 如果转换失败，使用默认方向
         marker.pose.orientation.w = 1.0
     
-    # Set arrow dimensions
-    # MODIFY: Adjust these dimensions based on your gripper and visualization preferences
-    marker.scale.x = width  # Length
-    marker.scale.y = 0.01   # Width
-    marker.scale.z = 0.01   # Height
+    # 设置箭头尺寸
+    marker.scale.x = width  # 长度
+    marker.scale.y = 0.01   # 宽度
+    marker.scale.z = 0.01   # 高度
     
-    # Set color based on score
-    marker.color.r = 1.0 - score  # More red for lower scores
-    marker.color.g = score        # More green for higher scores
+    # 根据评分设置颜色
+    marker.color.r = 1.0 - score  # 分数低时更红
+    marker.color.g = score        # 分数高时更绿
     marker.color.b = 0.0
     marker.color.a = 0.7
     
-    # Set lifetime
-    # MODIFY: Adjust the lifetime of markers if needed
-    marker.lifetime = rospy.Duration(2.0)  # 2 seconds
+    # 设置生命周期
+    marker.lifetime = rospy.Duration(2.0)  # 2秒
     
     return marker
 
 def create_marker_array(pose_list, scores=None):
-    """Create an array of multiple markers"""
+    """创建多个标记的数组"""
     marker_array = MarkerArray()
     
     for i, pose in enumerate(pose_list):
@@ -87,21 +83,20 @@ def create_marker_array(pose_list, scores=None):
     return marker_array
 
 def create_grasp_poses_marker_array(grasp_results, frame_id="camera_color_optical_frame"):
-    """Create marker array from GraspNet results"""
+    """从GraspNet结果创建标记数组"""
     from visualization_msgs.msg import MarkerArray
     from scipy.spatial.transform import Rotation
     from geometry_msgs.msg import Pose
     
     marker_array = MarkerArray()
     
-    # MODIFY: Adjust the number of displayed grasps based on your needs
-    for i, grasp in enumerate(grasp_results[:20]):  # Only display the first 20
+    for i, grasp in enumerate(grasp_results[:20]):  # 只显示前20个
         pose = Pose()
         pose.position.x = grasp['point'][0]
         pose.position.y = grasp['point'][1]
         pose.position.z = grasp['point'][2]
         
-        # Convert rotation matrix to quaternion
+        # 转换旋转矩阵为四元数
         r = Rotation.from_matrix(grasp['rotation'])
         quat = r.as_quat()  # [x, y, z, w]
         pose.orientation.x = quat[0]
@@ -109,15 +104,8 @@ def create_grasp_poses_marker_array(grasp_results, frame_id="camera_color_optica
         pose.orientation.z = quat[2]
         pose.orientation.w = quat[3]
         
-        # Create marker
-        # MODIFY: Change frame_id to match your camera frame
-        marker = create_grasp_marker(
-            [pose.position.x, pose.position.y, pose.position.z],
-            grasp['rotation'],
-            grasp['width'],
-            grasp['score'],
-            i
-        )
+        # 创建标记
+        marker = create_grasp_marker(pose, grasp['score'], f"grasp", i)
         marker.header.frame_id = frame_id
         marker_array.markers.append(marker)
     

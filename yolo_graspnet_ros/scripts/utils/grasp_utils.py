@@ -6,19 +6,17 @@ import tf.transformations
 from geometry_msgs.msg import PoseStamped
 
 def generate_grasp_pose(obj_pose, frame_id="rgb_camera_link", height_offset=0.05):
-    """Generate grasp pose based on object position"""
+    """基于物体位置生成抓取位姿"""
     grasp_pose = PoseStamped()
     grasp_pose.header.stamp = rospy.Time.now()
-    # MODIFY: Change frame_id to match your camera frame
     grasp_pose.header.frame_id = frame_id
     
-    # Set position (slightly above the object)
+    # 设置位置（稍微在物体上方）
     grasp_pose.pose.position.x = obj_pose.position.x
     grasp_pose.pose.position.y = obj_pose.position.y
-    # MODIFY: Adjust height_offset based on your gripper and object characteristics
-    grasp_pose.pose.position.z = obj_pose.position.z + height_offset  # Grasp position slightly above the object
+    grasp_pose.pose.position.z = obj_pose.position.z + height_offset  # 抓取位置略高于物体
     
-    # Set orientation (downward grasp)
+    # 设置方向（向下抓取）
     q = tf.transformations.quaternion_from_euler(-np.pi/2, 0, 0)
     grasp_pose.pose.orientation.x = q[0]
     grasp_pose.pose.orientation.y = q[1]
@@ -28,59 +26,58 @@ def generate_grasp_pose(obj_pose, frame_id="rgb_camera_link", height_offset=0.05
     return grasp_pose
 
 def compute_grasp_from_pointcloud(pcd, camera_matrix=None):
-    """Compute grasp pose from point cloud"""
+    """从点云计算抓取位姿"""
     try:
         from . import pointcloud_utils
         
-        # Process the point cloud
+        # 处理点云
         pcd, grasp_point, grasp_direction = pointcloud_utils.process_pointcloud(pcd)
         
         if grasp_point is None:
             return None, 0.0
             
-        # Calculate grasp score
-        compactness = 0.5  # Default value
-        size_score = min(1.0, len(np.asarray(pcd.points)) / 100.0)  # Normalized size
+        # 计算抓取评分
+        compactness = 0.5  # 默认值
+        size_score = min(1.0, len(np.asarray(pcd.points)) / 100.0)  # 归一化大小
         score = 0.5 * compactness + 0.5 * size_score
         
-        # Create grasp pose
+        # 创建抓取位姿
         grasp_pose = create_grasp_pose_from_point_and_direction(grasp_point, grasp_direction)
         
         return grasp_pose, score
     except Exception as e:
-        rospy.logerr(f"Point cloud grasp calculation error: {e}")
+        rospy.logerr(f"点云抓取计算错误: {e}")
         return None, 0.0
 
 def create_grasp_pose_from_point_and_direction(point, direction, frame_id="camera_color_optical_frame"):
-    """Create PoseStamped message from grasp point and direction"""
+    """从抓取点和方向创建PoseStamped消息"""
     pose = PoseStamped()
     pose.header.stamp = rospy.Time.now()
-    # MODIFY: Change frame_id to match your camera frame
     pose.header.frame_id = frame_id
     
-    # Set position
+    # 设置位置
     pose.pose.position.x = point[0]
     pose.pose.position.y = point[1]
     pose.pose.position.z = point[2]
     
-    # Normalize direction vector
+    # 标准化方向向量
     direction = direction / np.linalg.norm(direction)
     
-    # Create a rotation from z-axis to target direction
+    # 创建一个从z轴到目标方向的旋转
     z_axis = np.array([0, 0, 1])
     
-    # Calculate rotation axis and angle
+    # 计算旋转轴和角度
     rotation_axis = np.cross(z_axis, direction)
     
     if np.linalg.norm(rotation_axis) < 1e-6:
-        # Vectors are parallel, set default rotation axis
+        # 向量平行，设置默认旋转轴
         rotation_axis = np.array([1, 0, 0])
         angle = 0 if direction[2] > 0 else np.pi
     else:
         rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
         angle = np.arccos(np.dot(z_axis, direction))
     
-    # Axis-angle to quaternion conversion
+    # 轴角转四元数
     sin_half = np.sin(angle / 2)
     qx = rotation_axis[0] * sin_half
     qy = rotation_axis[1] * sin_half
@@ -95,18 +92,17 @@ def create_grasp_pose_from_point_and_direction(point, direction, frame_id="camer
     return pose
 
 def create_default_grasp():
-    """Create default grasp pose"""
+    """创建默认抓取位姿"""
     pose = PoseStamped()
     pose.header.stamp = rospy.Time.now()
-    # MODIFY: Change frame_id to match your camera frame
     pose.header.frame_id = "camera_color_optical_frame"
     
-    # Distinctly different default position
+    # 明显不同的默认位置
     pose.pose.position.x = 0.0
     pose.pose.position.y = 0.0
     pose.pose.position.z = 0.5
     
-    # Default orientation (downward grasp)
+    # 默认方向（向下抓取）
     q = tf.transformations.quaternion_from_euler(-np.pi/2, 0, 0)
     pose.pose.orientation.x = q[0]
     pose.pose.orientation.y = q[1]
