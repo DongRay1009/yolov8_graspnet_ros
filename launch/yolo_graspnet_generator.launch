@@ -1,0 +1,27 @@
+<launch>
+  <!-- Launch YOLOv8 3D detection node -->
+  <node name="yolov8_3d_detector" pkg="yolo_graspnet_ros" type="detector_3d_node.py" 
+        output="screen" launch-prefix="env PYTHONPATH=/opt/ros/noetic/lib/python3/dist-packages:$(env PYTHONPATH) $(env HOME)/python_envs/yolo_env/bin/python3">
+    <!-- MODIFY: Change these topics to match your camera setup -->
+    <param name="rgb_topic" value="/rgb/image_raw"/>
+    <param name="depth_topic" value="/depth_to_rgb/image_raw"/>
+    <param name="camera_info" value="/rgb/camera_info"/>
+    <!-- MODIFY: Change the model path to your YOLOv8 model location -->
+    <param name="model_path" value="$(find yolo_graspnet_ros)/models/yolov8m.pt"/>
+  </node>
+  
+  <!-- Launch simplified grasp generation node -->
+  <node name="graspnet_generator" pkg="yolo_graspnet_ros" type="graspnet_generator.py" 
+        output="screen" launch-prefix="env PYTHONPATH=/opt/ros/noetic/lib/python3/dist-packages:$(env PYTHONPATH) $(env HOME)/python_envs/yolo_env/bin/python3">
+    <!-- MODIFY: Change these topics to match your camera setup -->
+    <param name="rgb_topic" value="/rgb/image_raw"/>
+    <param name="depth_topic" value="/depth_to_rgb/image_raw"/>
+    <param name="camera_info" value="/rgb/camera_info"/>
+    <param name="detection_topic" value="/object_poses"/>
+    <!-- MODIFY: Change this path to your GraspNet model location -->
+    <param name="model_path" value="$(find yolo_graspnet_ros)/models/graspnet/checkpoint.tar"/>
+  </node>
+  
+  <!-- Launch RViz visualization -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find yolo_graspnet_ros)/rviz/grasp_detection.rviz" required="false"/>
+</launch>

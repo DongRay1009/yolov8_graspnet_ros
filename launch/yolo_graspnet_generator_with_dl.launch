@@ -1,0 +1,29 @@
+<launch>
+  <!-- Launch YOLOv8 3D detection node -->
+  <node name="yolov8_3d_detector" pkg="yolo_graspnet_ros" type="detector_3d_node.py" 
+        output="screen" launch-prefix="env PYTHONPATH=/opt/ros/noetic/lib/python3/dist-packages:$(env PYTHONPATH) $(env HOME)/python_envs/yolo_env/bin/python3">
+    <!-- MODIFY: Change these topics to match your camera setup -->
+    <param name="rgb_topic" value="/rgb/image_raw"/>
+    <param name="depth_topic" value="/depth_to_rgb/image_raw"/>
+    <param name="camera_info" value="/rgb/camera_info"/>
+    <!-- MODIFY: Change the model path to your YOLOv8 model location -->
+    <param name="model_path" value="$(find yolo_graspnet_ros)/models/best.pt"/>
+  </node>
+  
+  <!-- Launch GraspNet grasp generation node -->
+  <node name="graspnet_generator_with_dl" pkg="yolo_graspnet_ros" type="graspnet_generator_with_dl.py" 
+        output="screen" launch-prefix="env PYTHONPATH=/home/msi/yolo_3d_ws/src/graspnet-baseline:/home/msi/yolo_3d_ws/src/graspnet-baseline/models:/home/msi/yolo_3d_ws/src/graspnet-baseline/utils:/home/msi/yolo_3d_ws/src/graspnetAPI:/home/msi/yolo_3d_ws/src:/opt/ros/noetic/lib/python3/dist-packages:$(env PYTHONPATH) $(env HOME)/python_envs/yolo_env/bin/python3">
+    <!-- MODIFY: Change these topics to match your camera setup -->
+    <param name="rgb_topic" value="/rgb/image_raw"/>
+    <param name="depth_topic" value="/depth_to_rgb/image_raw"/>
+    <param name="camera_info" value="/rgb/camera_info"/>
+    <param name="detection_topic" value="/object_poses" />
+    <!-- MODIFY: Change this path to your GraspNet model directory -->
+    <param name="model_dir" value="$(find yolo_graspnet_ros)/models/graspnet"/> 
+    <!-- MODIFY: Set to "true" if you want to use simplified implementation without full GraspNet -->
+    <param name="force_simplified" value="false" />
+  </node>
+  
+  <!-- Launch RViz visualization -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find yolo_graspnet_ros)/rviz/grasp_detection.rviz" required="false"/>
+</launch>
