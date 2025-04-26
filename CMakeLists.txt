@@ -17,8 +17,8 @@ find_package(OpenCV REQUIRED)
 
 add_message_files(
   FILES
-  Detection.msg
-  DetectionArray.msg
+  DetectedObject.msg
+  DetectedObjectArray.msg
 )
 
 generate_messages(

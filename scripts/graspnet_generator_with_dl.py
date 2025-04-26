@@ -2,13 +2,13 @@
 import os
 import sys
 
-# Get current script directory
+# 获取当前脚本所在目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# Add utils directory to Python path
+# 将utils目录添加到Python路径
 scripts_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, scripts_dir)
 
-# Import other modules
+# 之后再导入其他模块
 import rospy
 import numpy as np
 import cv2
@@ -21,173 +21,233 @@ import message_filters
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 import sensor_msgs.point_cloud2 as pc2
 from geometry_msgs.msg import PoseArray, Pose, PoseStamped
-from visualization_msgs.msg import MarkerArray
+from visualization_msgs.msg import Marker, MarkerArray 
 from std_srvs.srv import Empty
+from std_msgs.msg import String
 
-# Import custom modules
+# 修改自定义模块导入方式
 from utils.bridge_utils import get_bridge
 from utils.pointcloud_utils import prepare_pointcloud_for_graspnet
 from utils.dl_model_utils import load_graspnet_model, create_camera_info, predict_grasps
 from utils.grasp_utils import create_default_grasp
 from utils.visualization import create_grasp_marker
 
+# 导入自定义消息
+from yolo_graspnet_ros.msg import DetectedObject, DetectedObjectArray
+
 class GraspNetROS:
     def __init__(self):
-        """Initialize GraspNet ROS node"""
+        """初始化GraspNet ROS节点"""
         rospy.init_node('graspnet_ros')
         
-        # Get parameters
-        # MODIFY: Change these topics to match your camera setup
+        # 获取参数
         self.rgb_topic = rospy.get_param('~rgb_topic', '/rgb/image_raw')
         self.depth_topic = rospy.get_param('~depth_topic', '/depth_to_rgb/image_raw')
         self.camera_info_topic = rospy.get_param('~camera_info', '/rgb/camera_info')
         self.detection_topic = rospy.get_param('~detection_topic', '/object_poses')
         
-        # Set GraspNet model path
-        # MODIFY: Change this path to your GraspNet model directory
+        # 设置GraspNet模型路径
         self.model_dir = rospy.get_param('~model_dir', 
                                         '/home/msi/yolo_3d_ws/src/yolo_graspnet_ros/models/graspnet')
         self.checkpoint_path = os.path.join(self.model_dir, 'checkpoint.tar')
         
-        rospy.loginfo(f"Using model path: {self.checkpoint_path}")
+        rospy.loginfo(f"使用模型路径: {self.checkpoint_path}")
         
-        # Initialize conversion bridge
+        # 初始化转换桥
         self.bridge = get_bridge()
         
-        # Setup publishers
+        # 设置发布者
         self.grasp_pub = rospy.Publisher('/best_grasp_pose', PoseStamped, queue_size=1)
         self.all_grasps_pub = rospy.Publisher('/all_grasp_poses', PoseArray, queue_size=1)
         self.debug_pub = rospy.Publisher('/grasp_debug', Image, queue_size=1)
         self.marker_pub = rospy.Publisher('/grasp_markers', MarkerArray, queue_size=1)
         self.grasp_cloud_pub = rospy.Publisher('/grasp_cloud', PointCloud2, queue_size=1)
+        self.grasp_info_pub = rospy.Publisher('/grasp_info', String, queue_size=10)  # 添加信息发布器
         
-        # Replace with individual message subscriptions
+        # 替换为单独的消息订阅
         self.rgb_msg = None
         self.depth_msg = None
         self.poses_msg = None
         
-        # Individual subscriptions
+        # 单独订阅
         self.rgb_sub = rospy.Subscriber(
             self.rgb_topic, Image, self.rgb_callback, queue_size=1)
         self.depth_sub = rospy.Subscriber(
             self.depth_topic, Image, self.depth_callback, queue_size=1)
         self.detection_sub = rospy.Subscriber(
-            self.detection_topic, PoseArray, self.detection_callback, queue_size=1)
+            self.detection_topic, DetectedObjectArray, self.detection_callback, queue_size=1)
         
-        # Add timer for processing
+        # COCO类别名称 - 用于标签映射
+        self.coco_names = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+                     "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+                     "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+                     "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+                     "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+                     "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+                     "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+                     "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+                     "hair drier", "toothbrush"]
+        
+        # 维护一个最新检测结果字典，用于标签映射
+        self.latest_detections = {}
+        
+        # 添加定时器进行处理
         self.timer = rospy.Timer(rospy.Duration(0.5), self.timer_callback)
         
-        # Get camera intrinsics
+        # 获取相机内参
         self.camera_info = None
         self.camera_matrix = None
         self.get_camera_info()
         
-        # Initialize TF listener
+        # 初始化TF监听器
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         
-        # Add parameter to force simplified implementation
+        # 添加是否强制使用简化版实现的参数
         self.force_simplified = rospy.get_param('~force_simplified', False)
         
-        # Modify model loading code, pass force_simplified parameter
+        # 修改模型加载代码，传递force_simplified参数
         if self.force_simplified:
-            rospy.loginfo("Configured to force simplified GraspNet implementation")
+            rospy.loginfo("配置为强制使用简化版GraspNet实现")
         else:
-            rospy.loginfo("Attempting to load full GraspNet model")
+            rospy.loginfo("尝试加载完整版GraspNet模型")
         
-        # Load GraspNet model - pass force_simplified parameter
+        # 加载GraspNet模型 - 传递force_simplified参数
         self.net, self.pred_decode, self.device = load_graspnet_model(
             self.checkpoint_path, 
             force_simplified=self.force_simplified
         )
         self.model_loaded = self.net is not None
         
-        rospy.loginfo("GraspNet ROS node initialization complete")
+        rospy.loginfo("GraspNet ROS节点初始化完成")
     
     def get_camera_info(self):
-        """Get camera intrinsics"""
+        """获取相机内参"""
         try:
             self.camera_info = rospy.wait_for_message(self.camera_info_topic, CameraInfo, timeout=5.0)
             K = self.camera_info.K
             self.camera_matrix = np.array([[K[0], K[1], K[2]], 
                                           [K[3], K[4], K[5]], 
                                           [K[6], K[7], K[8]]])
-            rospy.loginfo("Camera intrinsics initialization successful")
-            rospy.loginfo(f"Camera matrix: \n{self.camera_matrix}")
+            rospy.loginfo("相机内参初始化成功")
+            rospy.loginfo(f"相机矩阵: \n{self.camera_matrix}")
         except rospy.ROSException:
-            rospy.logerr("Unable to get camera intrinsics")
-            # MODIFY: Set default camera intrinsics appropriate for your camera
+            rospy.logerr("无法获取相机内参")
             self.camera_matrix = np.array([[550.0, 0, 320.0], [0, 550.0, 240.0], [0, 0, 1]])
     
     def rgb_callback(self, msg):
-        """RGB image callback function"""
+        """RGB图像回调函数"""
         self.rgb_msg = msg
-        rospy.loginfo_throttle(2.0, "Received RGB image")
+        rospy.loginfo_throttle(2.0, "收到RGB图像")
     
     def depth_callback(self, msg):
-        """Depth image callback function"""
+        """深度图像回调函数"""
         self.depth_msg = msg
-        rospy.loginfo_throttle(2.0, "Received depth image")
+        rospy.loginfo_throttle(2.0, "收到深度图像")
     
     def detection_callback(self, msg):
-        """Object detection results callback function"""
+        """物体检测结果回调函数 - 现在接收DetectedObjectArray"""
         self.poses_msg = msg
-        rospy.loginfo_throttle(2.0, f"Received detection results with {len(msg.poses)} objects")
+        rospy.loginfo_throttle(2.0, f"收到检测结果, 包含 {len(msg.objects)} 个物体")
+        
+        # 直接更新检测到的物体标签信息
+        self.update_latest_detections(msg)
+    
+    def update_latest_detections(self, poses_msg):
+        """根据最新检测更新标签信息"""
+        try:
+            rospy.loginfo(f"收到检测结果, 包含 {len(poses_msg.objects)} 个物体")
+            self.poses_msg = poses_msg  # 保存最新的检测结果
+            
+            # 更新物体标签 - 添加hasattr检查
+            for obj in poses_msg.objects:
+                label_info = f"从DetectedObject获取标签: {obj.label}"
+                # 检查是否存在confidence属性
+                if hasattr(obj, 'confidence'):
+                    label_info += f", 置信度: {obj.confidence:.2f}"
+                rospy.loginfo(label_info)
+        except Exception as e:
+            rospy.logerr(f"处理检测结果时发生错误: {e}")
+    
+    def get_object_label(self, position):
+        """尝试获取物体标签"""
+        # 创建位置键
+        pos_key = f"{position.x:.2f}_{position.y:.2f}_{position.z:.2f}"
+        
+        # 检查是否有匹配的标签
+        for key, label in self.latest_detections.items():
+            # 容许一些位置误差
+            parts_key = key.split('_')
+            parts_pos = pos_key.split('_')
+            
+            if len(parts_key) == 3 and len(parts_pos) == 3:
+                try:
+                    key_x, key_y, key_z = float(parts_key[0]), float(parts_key[1]), float(parts_key[2])
+                    pos_x, pos_y, pos_z = float(parts_pos[0]), float(parts_pos[1]), float(parts_pos[2])
+                    
+                    # 如果位置差异小于阈值，认为是同一个物体
+                    if (abs(key_x - pos_x) < 0.1 and 
+                        abs(key_y - pos_y) < 0.1 and 
+                        abs(key_z - pos_z) < 0.1):
+                        return label
+                except:
+                    pass
+        
+        # 如果没有找到匹配的标签，返回默认值
+        return "未知物体"
     
     def timer_callback(self, event):
-        """Timer callback function to process collected messages"""
-        # First ensure the model is loaded
+        """定时器回调函数，处理收集到的消息"""
+        # 先确保模型已加载
         if not hasattr(self, 'model_loaded') or self.model_loaded is None:
-            rospy.loginfo_throttle(2.0, "Model not yet loaded, skipping processing")
+            rospy.loginfo_throttle(2.0, "模型尚未加载完成，跳过处理")
             return
         
-        # Check if all necessary messages have been received
+        # 检查是否所有必要消息都已收到
         if self.rgb_msg is None or self.depth_msg is None:
             return
             
-        # Can try to generate grasp even without detection results
+        # 没有检测结果时也可以尝试生成抓取
         if self.poses_msg is None:
-            rospy.loginfo_throttle(2.0, "No object detection results received, using entire scene")
+            rospy.loginfo_throttle(2.0, "没有收到物体检测结果，使用全场景")
             
-        # Copy messages to avoid modification during processing
+        # 复制消息以避免处理时被其他回调修改
         rgb_msg = self.rgb_msg
         depth_msg = self.depth_msg
         poses_msg = self.poses_msg
         
-        # Reset messages to process new ones next time
+        # 重置消息，以便下一次处理新消息
         self.rgb_msg = None
         self.depth_msg = None
         self.poses_msg = None
         
-        # Process messages
+        # 处理消息
         self.process_messages(rgb_msg, depth_msg, poses_msg)
     
     def process_messages(self, rgb_msg, depth_msg, poses_msg=None):
-        """Process collected RGB, depth and detection result messages"""
+        """处理收集到的RGB、深度和检测结果消息"""
         try:
-            rospy.loginfo("Processing new messages")
+            rospy.loginfo("处理新的消息")
             
-            # Check if poses_msg is None
+            # 检查poses_msg是否为None
             if poses_msg is None:
-                rospy.loginfo("No detection results, skipping grasp pose generation")
-                return  # Return directly, don't generate grasp poses
+                rospy.loginfo("没有检测结果，跳过抓取位姿生成")
+                return  # 直接返回，不生成抓取位姿
             else:
-                pose_count = len(poses_msg.poses)
+                pose_count = len(poses_msg.objects)
                 if pose_count == 0:
-                    rospy.loginfo("No objects detected, skipping grasp pose generation")
-                    return  # Also return if 0 objects detected
-                # rospy.loginfo(f"Number of detected targets: {pose_count}")
+                    rospy.loginfo("没有检测到物体，跳过抓取位姿生成")
+                    return  # 检测到0个物体也直接返回
             
-            # Convert images
+            # 转换图像
             try:
                 rgb = self.bridge.imgmsg_to_cv2(rgb_msg, "rgb8")
                 depth = self.bridge.imgmsg_to_cv2(depth_msg)
-                # rospy.loginfo(f"Image conversion successful: RGB {rgb.shape}, depth {depth.shape}")
             except Exception as e:
-                rospy.logerr(f"Image conversion failed: {e}")
+                rospy.logerr(f"图像转换失败: {e}")
                 return
                 
-            # Configure camera info
+            # 配置相机信息
             camera_info = create_camera_info(
                 self.camera_matrix[0, 0],  # fx
                 self.camera_matrix[1, 1],  # fy
@@ -197,197 +257,264 @@ class GraspNetROS:
                 rgb.shape[0]               # height
             )
             
-            # Different processing based on detection results
+            # 根据是否有检测结果采取不同处理
             if poses_msg is None or pose_count == 0:
-                # No detection results, generate grasp poses for entire scene
+                # 没有检测结果，使用全场景生成抓取位姿
                 if self.model_loaded:
-                    # Use already loaded model, don't reimport
+                    # 直接使用已加载的模型，不重新导入
                     grasp_results = predict_grasps(self.net, self.pred_decode, self.device, rgb, depth, camera_info)
                     if grasp_results and len(grasp_results) > 0:
-                        rospy.loginfo(f"Generated {len(grasp_results)} grasp candidates for entire scene")
+                        rospy.loginfo(f"全场景生成了 {len(grasp_results)} 个抓取候选")
                         self.process_grasp_results(grasp_results)
                     else:
-                        rospy.logwarn("No valid grasp candidates generated")
+                        rospy.logwarn("没有生成有效的抓取候选")
                         self.publish_default_grasp()
                 else:
-                    rospy.logwarn("Model not loaded, cannot generate grasp poses")
+                    rospy.logwarn("模型未加载，无法生成抓取位姿")
                     self.publish_default_grasp()
             else:
-                # Have detection results, generate grasp poses for each object
+                # 有检测结果，为每个物体生成抓取位姿
                 self.process_detected_objects(rgb, depth, poses_msg, rgb_msg.header, camera_info)
         
         except Exception as e:
-            rospy.logerr(f"Message processing exception: {e}")
+            rospy.logerr(f"消息处理异常: {e}")
             import traceback
             rospy.logerr(traceback.format_exc())
             
-    # Add new method to process grasp results
-    def process_grasp_results(self, grasp_results):
-        """Process grasp results and publish"""
+    def process_detected_objects(self, rgb, depth, poses_msg, header, camera_info):
+        """处理检测到的物体"""
+        all_grasps = []
+        
+        # 处理每个检测到的物体
+        for i, obj in enumerate(poses_msg.objects):
+            # 获取位置
+            position = obj.pose.position
+            # 获取标签，默认为空字符串
+            label = getattr(obj, 'label', '')
+            
+            rospy.loginfo(f"为物体 {i+1} ({label}) 生成抓取位姿，位置: ({position.x:.3f}, {position.y:.3f}, {position.z:.3f})")
+            
+            # 使用GraspNet生成抓取
+            grasp_results = predict_grasps(self.net, self.pred_decode, self.device,
+                                          rgb, depth, camera_info, object_position=position)
+            
+            # 添加物体信息到抓取结果，使用安全的属性访问
+            if grasp_results and len(grasp_results) > 0:
+                for grasp in grasp_results:
+                    grasp['label'] = label
+                    # 安全地获取可选属性
+                    if hasattr(obj, 'class_id'):
+                        grasp['class_id'] = obj.class_id
+                    # 不要尝试访问confidence属性
+                    
+                rospy.loginfo(f"为物体 {i+1} ({label}) 生成了 {len(grasp_results)} 个抓取候选")
+                all_grasps.extend(grasp_results)
+            else:
+                rospy.logwarn(f"为物体 {i+1} ({label}) 没有生成有效的抓取候选")
+        
+        # 处理所有抓取结果
+        if all_grasps:
+            self.process_grasp_results(all_grasps, header)
+        else:
+            rospy.logwarn("没有为任何物体生成有效抓取")
+            self.publish_default_grasp(header)
+    
+    def process_grasp_results(self, grasp_results, header=None):
+        """处理抓取结果并发布"""
         try:
-            # Filter valid grasp poses
+            # 过滤有效抓取位姿
             valid_grasps = self.filter_valid_grasps(grasp_results)
             
-            # Publish best grasp pose
-            best_grasp = valid_grasps[0]  # Results already sorted by score
-            best_pose = PoseStamped()
-            # MODIFY: Change frame_id to match your camera frame
-            best_pose.header.frame_id = "camera_color_optical_frame"
-            best_pose.header.stamp = rospy.Time.now()
+            if not valid_grasps:
+                rospy.logwarn("没有找到有效的抓取位姿")
+                self.publish_default_grasp(header)
+                return
+                    
+            # 发布最佳抓取位姿
+            best_grasp = valid_grasps[0]  # 结果已经按分数排序
             
-            # Get object label (if available)
-            object_label = best_grasp.get('label', "Unknown object")
+            # 创建PoseStamped消息
+            pose_stamped = PoseStamped()
             
-            # Set position (convert to meters)
-            best_pose.pose.position.x = float(best_grasp['point'][0]) / 1000.0
-            best_pose.pose.position.y = float(best_grasp['point'][1]) / 1000.0
-            best_pose.pose.position.z = float(best_grasp['point'][2]) / 1000.0
+            # 使用传入的header或创建新的
+            if header:
+                pose_stamped.header = header
+            else:
+                pose_stamped.header.stamp = rospy.Time.now()
+                pose_stamped.header.frame_id = "camera_color_optical_frame"
             
-            # Set orientation
+            # 设置位置（米）
+            pose_stamped.pose.position.x = best_grasp['point'][0] / 1000.0
+            pose_stamped.pose.position.y = best_grasp['point'][1] / 1000.0
+            pose_stamped.pose.position.z = best_grasp['point'][2] / 1000.0
+            
             try:
-                import tf.transformations
-                matrix = np.eye(4)
-                matrix[:3, :3] = best_grasp['rotation']
-                q = tf.transformations.quaternion_from_matrix(matrix)
-                best_pose.pose.orientation.x = q[0]
-                best_pose.pose.orientation.y = q[1]
-                best_pose.pose.orientation.z = q[2]
-                best_pose.pose.orientation.w = q[3]
-                
-                # Combine quaternion and position information in one line, add object label
-                self.grasp_pub.publish(best_pose)
-                rospy.loginfo(f"Published best grasp pose: object={object_label}, " +
-                              f"position=({best_pose.pose.position.x:.3f}, {best_pose.pose.position.y:.3f}, {best_pose.pose.position.z:.3f}), " +
-                              f"orientation=(x:{q[0]:.3f}, y:{q[1]:.3f}, z:{q[2]:.3f}, w:{q[3]:.3f}), " +
-                              f"score={best_grasp['score']:.3f}")
+                # 设置方向（从旋转矩阵转换为四元数）
+                q = self.rotation_matrix_to_quaternion(best_grasp['rotation'])
+                pose_stamped.pose.orientation.x = q[0]
+                pose_stamped.pose.orientation.y = q[1]
+                pose_stamped.pose.orientation.z = q[2]
+                pose_stamped.pose.orientation.w = q[3]
             except Exception as e:
-                rospy.logerr(f"Orientation conversion error: {e}")
-                # Use default orientation when conversion fails
-                best_pose.pose.orientation.w = 1.0
-                
-                # Publish best grasp pose (conversion failure case)
-                self.grasp_pub.publish(best_pose)
-                rospy.loginfo(f"Published best grasp pose: " +
-                              f"position=({best_pose.pose.position.x:.3f}, {best_pose.pose.position.y:.3f}, {best_pose.pose.position.z:.3f}), " +
-                              f"orientation=(default), score={best_grasp['score']:.3f}")
+                rospy.logerr(f"方向转换错误: {e}")
+                # 使用默认方向（朝下）
+                pose_stamped.pose.orientation.x = 0
+                pose_stamped.pose.orientation.y = 0
+                pose_stamped.pose.orientation.z = -0.707
+                pose_stamped.pose.orientation.w = 0.707
             
-            # Create and publish marker array
-            markers = MarkerArray()
-            # MODIFY: Adjust the number of displayed grasps based on your needs
-            for j, grasp in enumerate(valid_grasps[:10]):  # Only display top 10
-                marker = create_grasp_marker(
-                    grasp['point'],
-                    grasp['rotation'],
-                    grasp['width'],
-                    grasp['score'],
-                    j
-                )
-                markers.markers.append(marker)
+            # 创建文本标记，显示物体标签和分数
+            text_marker = Marker()
+            text_marker.header = pose_stamped.header
+            text_marker.ns = "grasp_labels"
+            text_marker.id = 0
+            text_marker.type = Marker.TEXT_VIEW_FACING
+            text_marker.action = Marker.ADD
+            text_marker.pose = pose_stamped.pose
+            text_marker.pose.position.z += 0.05  # 在抓取点上方显示
+            score_text = f"{best_grasp['score']:.2f}"
             
-            if len(markers.markers) > 0:
-                self.marker_pub.publish(markers)
-                # rospy.loginfo(f"Published {len(markers.markers)} grasp markers")
+            # 如果有标签，添加到文本中
+            if 'label' in best_grasp and best_grasp['label']:
+                score_text = f"{best_grasp['label']}: {score_text}"
                 
-            # Publish grasp point cloud
-            self.publish_grasp_cloud(grasp_results)
-                
+            text_marker.text = score_text
+            text_marker.scale.z = 0.02  # 文本大小
+            text_marker.color.a = 1.0
+            text_marker.color.r = 1.0
+            text_marker.color.g = 1.0
+            text_marker.color.b = 1.0
+            
+            # 创建MarkerArray并添加文本标记
+            marker_array = MarkerArray()
+            marker_array.markers.append(text_marker)
+            
+            # 发布抓取位姿和标记
+            self.grasp_pub.publish(pose_stamped)
+            self.marker_pub.publish(marker_array)
+            
+            # 创建包含所有信息的字符串
+            label_info = best_grasp.get('label', '未知物体')
+            grasp_info = f"物体类别: {label_info}\n" + \
+                         f"位置: ({pose_stamped.pose.position.x:.3f}, {pose_stamped.pose.position.y:.3f}, {pose_stamped.pose.position.z:.3f})\n" + \
+                         f"方向: 四元数({pose_stamped.pose.orientation.x:.3f}, {pose_stamped.pose.orientation.y:.3f}, " + \
+                         f"{pose_stamped.pose.orientation.z:.3f}, {pose_stamped.pose.orientation.w:.3f})\n" + \
+                         f"抓取分数: {best_grasp['score']:.3f}"
+            
+            # 发布完整信息
+            self.grasp_info_pub.publish(grasp_info)
+            
+            # 发布点云
+            self.publish_grasp_cloud(valid_grasps)
+            
+            label_info = best_grasp.get('label', '未知物体')
+            rospy.loginfo(f"发布了抓取位姿: 物体={label_info}, " +
+                        f"位置=({pose_stamped.pose.position.x:.3f}, {pose_stamped.pose.position.y:.3f}, {pose_stamped.pose.position.z:.3f}), " +
+                        f"方向=({pose_stamped.pose.orientation.x:.3f}, {pose_stamped.pose.orientation.y:.3f}, " +
+                        f"{pose_stamped.pose.orientation.z:.3f}, {pose_stamped.pose.orientation.w:.3f}), " +
+                        f"分数={best_grasp['score']:.2f}")
+        
         except Exception as e:
-            rospy.logerr(f"Failed to process grasp results: {e}")
-            self.publish_default_grasp()
+            rospy.logerr(f"处理抓取结果失败: {e}")
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            self.publish_default_grasp(header)
     
     def filter_valid_grasps(self, grasp_results):
-        """Filter valid grasp poses"""
+        """过滤出有效的抓取位姿"""
         valid_grasps = []
         for grasp in grasp_results:
             point = grasp['point']
-            # Example: filter out points too far or too close
-            # MODIFY: Adjust distance thresholds based on your workspace
+            # 示例：过滤掉过远或过近的点
             distance = np.linalg.norm(point)
-            if 0.05 < distance < 1.5:  # Units: meters
+            if 0.05 < distance < 1.5:  # 单位：米
                 valid_grasps.append(grasp)
         
-        return valid_grasps if valid_grasps else grasp_results  # If all filtered out, return original results
+        return valid_grasps if valid_grasps else grasp_results  # 如果全都过滤掉了，返回原始结果
     
     def create_pose_stamped(self, pose):
-        """Create PoseStamped message from Pose"""
+        """从Pose创建PoseStamped消息"""
         pose_stamped = PoseStamped()
         pose_stamped.header.stamp = rospy.Time.now()
-        # MODIFY: Change frame_id to match your camera frame
         pose_stamped.header.frame_id = "camera_color_optical_frame"
         pose_stamped.pose = pose
         return pose_stamped
     
     def predict_simple_grasp(self, rgb_roi, depth_roi, cx, cy):
-        """Simple grasp pose prediction (when GraspNet is unavailable)"""
+        """简单的抓取位姿预测（当GraspNet不可用时）"""
         import tf.transformations
         
-        depth_values = depth_roi[depth_roi > 0.01]  # Filter invalid values
+        depth_values = depth_roi[depth_roi > 0.01]  # 过滤无效值
         if len(depth_values) == 0:
-            z = 0.5  # Default depth
+            z = 0.5  # 默认深度
         else:
-            z = np.median(depth_values)  # Use median depth
+            z = np.median(depth_values)  # 使用中值深度
         
-        # Convert image coordinates to camera coordinates
+        # 将图像坐标转换为相机坐标
         x = (cx - self.camera_matrix[0, 2]) * z / self.camera_matrix[0, 0]
         y = (cy - self.camera_matrix[1, 2]) * z / self.camera_matrix[1, 1]
         
-        # Create pose message
+        # 创建位姿消息
         pose_stamped = PoseStamped()
         pose_stamped.header.stamp = rospy.Time.now()
-        # MODIFY: Change frame_id to match your camera frame
         pose_stamped.header.frame_id = "camera_color_optical_frame"
         
-        # Set position (position in camera coordinate system)
+        # 设置位置（相机坐标系中的位置）
         pose_stamped.pose.position.x = x
         pose_stamped.pose.position.y = y
-        pose_stamped.pose.position.z = z - 0.05  # Slightly closer to object
+        pose_stamped.pose.position.z = z - 0.05  # 略微靠近物体
         
-        # Set orientation (grasp direction downward)
+        # 设置方向（抓取方向朝下）
         q = tf.transformations.quaternion_from_euler(-np.pi/2, 0, 0)
         pose_stamped.pose.orientation.x = q[0]
         pose_stamped.pose.orientation.y = q[1]
         pose_stamped.pose.orientation.z = q[2]
         pose_stamped.pose.orientation.w = q[3]
         
-        # Calculate a simple score
-        score = 0.7  # Example score
+        # 计算一个简单的评分
+        score = 0.7  # 示例评分
         
         return pose_stamped, score
     
-    def publish_default_grasp(self):
-        """Publish default grasp pose"""
+    def publish_default_grasp(self, header=None):
+        """发布默认抓取位姿"""
         default_pose = create_default_grasp()
+        
+        # 如果提供了header，则使用它
+        if (header):
+            default_pose.header = header
+        
         self.grasp_pub.publish(default_pose)
-        rospy.loginfo("Published default grasp pose")
+        rospy.loginfo("发布默认抓取位姿")
     
     def rotation_matrix_to_quaternion(self, rot_matrix):
-        """Convert rotation matrix to quaternion"""
-        import tensorflow as tf
+        """将旋转矩阵转换为四元数"""
+        # 移除tensorflow导入，使用numpy代替
         
-        # Ensure input is a valid rotation matrix
+        # 确保输入是有效的旋转矩阵
         if isinstance(rot_matrix, np.ndarray):
-            if rot_matrix.shape != (3, 3):
-                rospy.logwarn(f"Rotation matrix has incorrect shape: {rot_matrix.shape}")
-                # If not a 3x3 matrix, return default orientation (downward)
+            if (rot_matrix.shape != (3, 3)):
+                rospy.logwarn(f"旋转矩阵形状不正确: {rot_matrix.shape}")
+                # 如果不是3x3矩阵，返回默认方向（朝下）
                 return [0, 0, -0.707, 0.707]
         
         try:
-            # Calculate quaternion elements
+            # 计算四元数的元素
             trace = np.trace(rot_matrix)
             
-            if trace > 0:
+            if (trace > 0):
                 S = np.sqrt(trace + 1.0) * 2
                 qw = 0.25 * S
                 qx = (rot_matrix[2, 1] - rot_matrix[1, 2]) / S
                 qy = (rot_matrix[0, 2] - rot_matrix[2, 0]) / S
                 qz = (rot_matrix[1, 0] - rot_matrix[0, 1]) / S
-            elif rot_matrix[0, 0] > rot_matrix[1, 1] and rot_matrix[0, 0] > rot_matrix[2, 2]:
+            elif (rot_matrix[0, 0] > rot_matrix[1, 1] and rot_matrix[0, 0] > rot_matrix[2, 2]):
                 S = np.sqrt(1.0 + rot_matrix[0, 0] - rot_matrix[1, 1] - rot_matrix[2, 2]) * 2
                 qw = (rot_matrix[2, 1] - rot_matrix[1, 2]) / S
                 qx = 0.25 * S
                 qy = (rot_matrix[0, 1] + rot_matrix[1, 0]) / S
                 qz = (rot_matrix[0, 2] + rot_matrix[2, 0]) / S
-            elif rot_matrix[1, 1] > rot_matrix[2, 2]:
+            elif (rot_matrix[1, 1] > rot_matrix[2, 2]):
                 S = np.sqrt(1.0 + rot_matrix[1, 1] - rot_matrix[0, 0] - rot_matrix[2, 2]) * 2
                 qw = (rot_matrix[0, 2] - rot_matrix[2, 0]) / S
                 qx = (rot_matrix[0, 1] + rot_matrix[1, 0]) / S
@@ -402,34 +529,34 @@ class GraspNetROS:
             
             return [qx, qy, qz, qw]
         except Exception as e:
-            rospy.logerr(f"Quaternion conversion error: {e}")
-            # Return default orientation (downward)
+            rospy.logerr(f"四元数转换错误: {e}")
+            # 返回默认方向（朝下）
             return [0, 0, -0.707, 0.707]
     
-    # Publish point cloud while publishing grasp markers
+    # 在发布抓取标记的同时发布点云
     def publish_grasp_cloud(self, grasp_results):
-        """Publish grasp point cloud for visualization"""
+        """发布抓取点云用于可视化"""
         from sensor_msgs.msg import PointCloud2, PointField
         import sensor_msgs.point_cloud2 as pc2
         
         if not grasp_results:
             return
             
-        # Create point cloud message
+        # 创建点云消息
         cloud_msg = PointCloud2()
-        # MODIFY: Change frame_id to match your camera frame
         cloud_msg.header.frame_id = "camera_color_optical_frame"
         cloud_msg.header.stamp = rospy.Time.now()
         
-        # Extract all grasp points
+        # 提取所有抓取点
         points = []
         for grasp in grasp_results:
-            # Convert to metric units
+            # 转换为米制单位
             x, y, z = grasp['point'] / 1000.0
+            # 根据分数设置颜色 - 高分数为绿色，低分数为红色
             r, g, b = int(255 * (1.0 - grasp['score'])), int(255 * grasp['score']), 0
             points.append([x, y, z, r, g, b])
         
-        # Create point cloud fields
+        # 创建点云字段
         fields = [
             PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
             PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
@@ -439,35 +566,9 @@ class GraspNetROS:
             PointField(name='b', offset=14, datatype=PointField.UINT8, count=1),
         ]
         
-        # Create point cloud
+        # 创建点云
         cloud_msg = pc2.create_cloud(cloud_msg.header, fields, points)
         self.grasp_cloud_pub.publish(cloud_msg)
-    
-    def process_detected_objects(self, rgb, depth, poses_msg, header, camera_info):
-        """Process detected objects"""
-        all_grasps = []
-        
-        # Process each detected object
-        for i, pose in enumerate(poses_msg.poses):
-            rospy.loginfo(f"Generating grasp poses for object {i+1}, position: ({pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f})")
-            
-            # Use GraspNet to generate grasps
-            grasp_results = predict_grasps(self.net, self.pred_decode, self.device, 
-                                          rgb, depth, camera_info, object_position=pose.position)
-            
-            if grasp_results and len(grasp_results) > 0:
-                rospy.loginfo(f"Generated {len(grasp_results)} grasp candidates for object {i+1}")
-                all_grasps.extend(grasp_results)
-            else:
-                rospy.logwarn(f"No valid grasp candidates generated for object {i+1}")
-        
-        # Process all collected grasps
-        if all_grasps:
-            rospy.loginfo(f"Collected {len(all_grasps)} grasp candidates from all objects")
-            self.process_grasp_results(all_grasps)
-        else:
-            rospy.logwarn("No valid grasps generated for any object")
-            self.publish_default_grasp()
 
 if __name__ == "__main__":
     try:
